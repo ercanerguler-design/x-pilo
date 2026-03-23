@@ -66,6 +66,21 @@ Arayuz:
 Saglik kontrolu:
 - `GET /api/v1/health`
 
+### 2.2) Neon / Postgres Kalici Kayit Ayari
+
+Canli gorev job kayitlari ve stop-event loglari `DATABASE_URL` tanimliysa veritabanina yazilir.
+
+PowerShell ornegi:
+
+```powershell
+$env:DATABASE_URL="postgresql://USER:PASSWORD@HOST/DB?sslmode=require"
+```
+
+Notlar:
+- `DATABASE_URL` yoksa sistem in-memory calisir (restart sonrasi job/log kaydi korunmaz).
+- Uretimde Vercel Project Settings -> Environment Variables altina `DATABASE_URL` ekleyin.
+- Secret degerleri kod veya README icine yazmayin.
+
 ### 2.1) Tek Komutla Kur ve Calistir (Windows)
 
 `scripts/bootstrap.ps1` scripti su adimlari otomatik yapar:
@@ -123,6 +138,44 @@ pytest -q
 Drone panelinde:
 - `Otomatik Durum` acikken drone status belirli saniye araliginda otomatik yenilenir.
 - `Yenileme (sn)` ile polling periyodu ayarlanir.
+
+## Gorev Parametreleri Aciklamasi
+
+Web paneldeki gorev parametreleri kisa anlamlari:
+
+- `Latitude / Longitude`: Drone'un hedef veya merkez konumu.
+- `Altitude (m)`: Ucus irtifasi (metre).
+- `Yaw (deg)`: Drone'un yonelim acisi (heading).
+- `Frame Count`: Gorevde islenecek goruntu sayisi.
+- `Battery (%)`: Baslangic batarya seviyesi.
+- `Wind (m/s)`: Ruzgar hizi.
+- `Wind Dir (deg)`: Ruzgar yonu.
+- `RTK Fix`: Yuksek hassasiyetli GNSS kilidi bilgisi.
+- `Telemetry Link`: Drone telemetri baglantisi aktif mi.
+- `Human Detected`: Insan algisi (guvenlik acisindan kritik).
+- `Manual Approval Mode`: Otomatik mudahale yerine operator onayi zorunlu mod.
+- `Operator ID`: Operasyon kayitlari icin operator kimligi.
+- `Approved Target IDs`: Mudahale izni verilen hedef listesi.
+- `Drawn Polygon as No-Spray Zone`: Cizilen alanin ilaclama disi bolge olarak isaretlenmesi.
+
+## Spray Volume Neye Gore Ayarlanir?
+
+`Spray Volume` tek bir sabit degildir; saha ve guvenlik kosullarina gore belirlenir.
+
+Temel karar girdileri:
+
+- `Hedef yogunlugu`: Yogun yabanci otta daha yuksek, seyrek alanda daha dusuk doz.
+- `Ucus hizi`: Hiz arttikca ayni alana dusen doz azalir; gerekirse ml artirilir.
+- `Irtifa/nozzle dagilimi`: Irtifa arttikca dagilim genisler, hedefe dusen etkin doz degisebilir.
+- `Ruzgar`: Yuksek ruzgarda drift riski artar; doz arttirmak yerine gorevi yavaslatmak/durdurmak daha guvenlidir.
+- `Guvenlik kurallari`: `human_detected`, `no_spray_zones`, `manual_approval_required` ve belirsiz hedef bloklari aktifken mudahale sinirlanir veya durdurulur.
+
+Pratik operasyon yaklasimi:
+
+- Dusuk yogunluk: dusuk ml
+- Orta yogunluk: orta ml
+- Yuksek yogunluk: yuksek ml
+- Guvenli olmayan kosullar (insan, belirsiz hedef, yasak bolge, asiri ruzgar): `spray = 0` veya gorev stop
 
 ## API Ozeti
 

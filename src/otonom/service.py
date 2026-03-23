@@ -21,6 +21,7 @@ from .geometry_io import (
 from .inference import YOLOModelRuntime
 from .mission import MissionController
 from .models import DronePose, SafetyStatus
+from .persistence import make_persistence_store
 from .schemas import (
     DroneConnectRequest,
     DroneFailsafeRequest,
@@ -72,6 +73,7 @@ class OtonomService:
         self._active_live_job_id: str | None = None
         self._active_parcel_id: str | None = None
         self._stop_events: list[dict] = []
+        self._store = make_persistence_store()
         self._camera_self_check_ok: bool | None = None
         self._payload_self_check_ok: bool | None = None
         self._self_check_source: str = "none"
@@ -96,6 +98,7 @@ class OtonomService:
             if self._active_live_job_id and self._active_live_job_id in self._live_jobs:
                 self._live_jobs[self._active_live_job_id].setdefault("stop_events", []).append(event)
                 self._live_jobs[self._active_live_job_id]["updated_at"] = self._utc_now()
+        self._store.append_stop_event(event)
         return event
 
     def _new_live_job(self, total_parcels: int) -> dict:
@@ -116,6 +119,7 @@ class OtonomService:
         }
         with self._jobs_lock:
             self._live_jobs[job_id] = job
+        self._store.upsert_job(job)
         return job
 
     def _update_live_job(self, job_id: str, **updates) -> None:
@@ -125,12 +129,17 @@ class OtonomService:
                 return
             job.update(updates)
             job["updated_at"] = self._utc_now()
+            self._store.upsert_job(job)
 
     def _get_live_job(self, job_id: str) -> dict | None:
         with self._jobs_lock:
             job = self._live_jobs.get(job_id)
             if not job:
-                return None
+                stored = self._store.get_job(job_id)
+                if stored is None:
+                    return None
+                self._live_jobs[job_id] = stored
+                job = stored
             copied = dict(job)
             copied["stop_events"] = list(job.get("stop_events", []))
             copied["result"] = job.get("result")
@@ -619,6 +628,9 @@ class OtonomService:
         )
 
     def list_stop_events(self) -> list[StopEventLogItem]:
+        stored_events = self._store.list_stop_events(limit=200)
+        if stored_events:
+            return [StopEventLogItem.model_validate(e) for e in stored_events]
         with self._jobs_lock:
             return [StopEventLogItem.model_validate(e) for e in list(self._stop_events)]
 
