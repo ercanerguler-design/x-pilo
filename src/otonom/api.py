@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import time
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .schemas import (
@@ -19,12 +21,17 @@ from .schemas import (
     GeometryImportResponse,
     ImageDetectionResponse,
     LiveParcelMissionResponse,
+    LiveMissionJobAcceptedResponse,
+    LiveMissionJobStatusResponse,
     ParcelMissionRequest,
     ParcelMissionResponse,
     ParcelizeRequest,
     ParcelizeResponse,
     RunMissionRequest,
     RunMissionResponse,
+    StopEventLogItem,
+    StopMissionRequest,
+    RestartConfirmRequest,
     SimulateDetectionRequest,
     SimulateDetectionResponse,
 )
@@ -68,12 +75,69 @@ def run_mission_parcels(payload: ParcelMissionRequest) -> ParcelMissionResponse:
 
 @app.post("/api/v1/mission/run-parcels-live", response_model=LiveParcelMissionResponse)
 def run_mission_parcels_live(payload: ParcelMissionRequest) -> LiveParcelMissionResponse:
-    return service.run_live_parcel_mission(payload)
+    try:
+        return service.run_live_parcel_mission(payload)
+    except ValueError as exc:
+        if str(exc) == "RESTART_CONFIRM_REQUIRED":
+            raise HTTPException(status_code=409, detail="RESTART_CONFIRM_REQUIRED") from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/mission/run-parcels-live/start", response_model=LiveMissionJobAcceptedResponse)
+def start_mission_parcels_live(payload: ParcelMissionRequest) -> LiveMissionJobAcceptedResponse:
+    try:
+        return service.start_live_parcel_mission(payload)
+    except ValueError as exc:
+        if str(exc) == "RESTART_CONFIRM_REQUIRED":
+            raise HTTPException(status_code=409, detail="RESTART_CONFIRM_REQUIRED") from exc
+        if str(exc) == "LIVE_MISSION_ALREADY_RUNNING":
+            raise HTTPException(status_code=409, detail="LIVE_MISSION_ALREADY_RUNNING") from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/mission/jobs/{job_id}", response_model=LiveMissionJobStatusResponse)
+def get_mission_job(job_id: str) -> LiveMissionJobStatusResponse:
+    try:
+        return service.get_live_mission_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/mission/jobs/{job_id}/stream")
+def stream_mission_job(job_id: str) -> StreamingResponse:
+    def event_stream():
+        while True:
+            try:
+                snapshot = service.get_live_mission_job(job_id)
+            except ValueError:
+                yield "event: error\ndata: {\"detail\":\"MISSION_JOB_NOT_FOUND\"}\n\n"
+                break
+
+            payload = snapshot.model_dump_json()
+            yield f"data: {payload}\n\n"
+            if snapshot.status in {"COMPLETE", "PARTIAL", "FAILED", "STOPPED"}:
+                break
+            time.sleep(1.0)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.post("/api/v1/mission/stop", response_model=DroneStatusResponse)
-def stop_live_mission() -> DroneStatusResponse:
-    return service.stop_live_mission()
+def stop_live_mission(payload: StopMissionRequest) -> DroneStatusResponse:
+    return service.stop_live_mission(payload)
+
+
+@app.post("/api/v1/mission/restart-confirm")
+def restart_confirm(payload: RestartConfirmRequest) -> dict[str, str | bool]:
+    try:
+        return service.confirm_restart_after_stop(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/mission/stop-events", response_model=list[StopEventLogItem])
+def get_stop_events() -> list[StopEventLogItem]:
+    return service.list_stop_events()
 
 
 @app.post("/api/v1/detection/simulate", response_model=SimulateDetectionResponse)

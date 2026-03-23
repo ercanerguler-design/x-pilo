@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import math
+import threading
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import load_config
@@ -30,6 +33,8 @@ from .schemas import (
     GeometryImportResponse,
     ImageDetectionResponse,
     LiveParcelMissionResponse,
+    LiveMissionJobAcceptedResponse,
+    LiveMissionJobStatusResponse,
     ParcelMissionItem,
     ParcelMissionRequest,
     ParcelMissionResponse,
@@ -39,6 +44,9 @@ from .schemas import (
     RunMissionRequest,
     RunMissionResponse,
     ServicedTargetResponse,
+    StopEventLogItem,
+    StopMissionRequest,
+    RestartConfirmRequest,
     SimulateDetectionRequest,
     SimulateDetectionResponse,
 )
@@ -56,6 +64,71 @@ class OtonomService:
         )
         self._drone = DroneManager()
         self._stop_requested = False
+        self._restart_confirmation_required = False
+        self._jobs_lock = threading.Lock()
+        self._live_jobs: dict[str, dict] = {}
+        self._active_live_job_id: str | None = None
+        self._active_parcel_id: str | None = None
+        self._stop_events: list[dict] = []
+
+    @staticmethod
+    def _utc_now() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def _record_stop_event(self, operator_id: str, reason: str) -> dict:
+        event = {
+            "operator_id": operator_id,
+            "requested_at": self._utc_now(),
+            "job_id": self._active_live_job_id,
+            "parcel_id": self._active_parcel_id,
+            "reason": reason,
+        }
+        with self._jobs_lock:
+            self._stop_events.append(event)
+            if len(self._stop_events) > 200:
+                self._stop_events = self._stop_events[-200:]
+            if self._active_live_job_id and self._active_live_job_id in self._live_jobs:
+                self._live_jobs[self._active_live_job_id].setdefault("stop_events", []).append(event)
+                self._live_jobs[self._active_live_job_id]["updated_at"] = self._utc_now()
+        return event
+
+    def _new_live_job(self, total_parcels: int) -> dict:
+        job_id = str(uuid.uuid4())
+        now = self._utc_now()
+        job = {
+            "job_id": job_id,
+            "status": "QUEUED",
+            "message": "Live mission queued",
+            "created_at": now,
+            "updated_at": now,
+            "total_parcels": int(total_parcels),
+            "completed_parcels": 0,
+            "active_parcel_id": None,
+            "next_parcel_id": None,
+            "stop_events": [],
+            "result": None,
+        }
+        with self._jobs_lock:
+            self._live_jobs[job_id] = job
+        return job
+
+    def _update_live_job(self, job_id: str, **updates) -> None:
+        with self._jobs_lock:
+            job = self._live_jobs.get(job_id)
+            if not job:
+                return
+            job.update(updates)
+            job["updated_at"] = self._utc_now()
+
+    def _get_live_job(self, job_id: str) -> dict | None:
+        with self._jobs_lock:
+            job = self._live_jobs.get(job_id)
+            if not job:
+                return None
+            copied = dict(job)
+            copied["stop_events"] = list(job.get("stop_events", []))
+            copied["result"] = job.get("result")
+            return copied
 
     def request_mission_stop(self) -> None:
         self._stop_requested = True
@@ -261,7 +334,12 @@ class OtonomService:
             ],
         )
 
-    def _run_parcel_loop(self, request: ParcelMissionRequest, use_live_drone: bool) -> ParcelMissionResponse:
+    def _run_parcel_loop(
+        self,
+        request: ParcelMissionRequest,
+        use_live_drone: bool,
+        progress_cb=None,
+    ) -> ParcelMissionResponse:
         controller = MissionController(self.config)
         safety = SafetyStatus(
             rtk_fix=request.safety.rtk_fix,
@@ -279,7 +357,7 @@ class OtonomService:
         zones = self._zones_from_request(request)
         approved = set(request.approved_target_ids)
 
-        for parcel in request.parcels:
+        for parcel_idx, parcel in enumerate(request.parcels):
             if self._stop_requested:
                 parcel_results.append(
                     ParcelMissionItem(
@@ -291,6 +369,18 @@ class OtonomService:
                     )
                 )
                 continue
+
+            self._active_parcel_id = parcel.parcel_id
+            if progress_cb:
+                next_parcel = request.parcels[parcel_idx + 1].parcel_id if parcel_idx + 1 < len(request.parcels) else None
+                progress_cb(
+                    {
+                        "completed_parcels": completed,
+                        "active_parcel_id": parcel.parcel_id,
+                        "next_parcel_id": next_parcel,
+                        "message": f"Parcel running: {parcel.parcel_id}",
+                    }
+                )
 
             area = AreaGeometry(coordinates=[(float(lat), float(lon)) for lat, lon in parcel.coordinates])
             scan_path = self._generate_scan_path(
@@ -374,6 +464,17 @@ class OtonomService:
             if parcel_state == "COMPLETE":
                 completed += 1
 
+            if progress_cb:
+                next_parcel = request.parcels[parcel_idx + 1].parcel_id if parcel_idx + 1 < len(request.parcels) else None
+                progress_cb(
+                    {
+                        "completed_parcels": completed,
+                        "active_parcel_id": (None if next_parcel else parcel.parcel_id),
+                        "next_parcel_id": next_parcel,
+                        "message": f"Parcel {parcel.parcel_id} -> {parcel_state}",
+                    }
+                )
+
             parcel_results.append(
                 ParcelMissionItem(
                     parcel_id=parcel.parcel_id,
@@ -388,6 +489,7 @@ class OtonomService:
 
         total = len(request.parcels)
         failed = total - completed
+        self._active_parcel_id = None
         return ParcelMissionResponse(
             state=("COMPLETE" if failed == 0 else "PARTIAL"),
             total_parcels=total,
@@ -402,6 +504,8 @@ class OtonomService:
         return self._run_parcel_loop(request, use_live_drone=False)
 
     def run_live_parcel_mission(self, request: ParcelMissionRequest) -> LiveParcelMissionResponse:
+        if self._restart_confirmation_required and not getattr(request, "restart_confirmed", False):
+            raise ValueError("RESTART_CONFIRM_REQUIRED")
         self.clear_mission_stop()
         status = self._drone.status()
         if not status.get("connected"):
@@ -416,6 +520,101 @@ class OtonomService:
             serviced_targets=parcel_result.serviced_targets,
             drone_status=DroneStatusResponse.model_validate(self._drone.status()),
         )
+
+    def start_live_parcel_mission(self, request: ParcelMissionRequest) -> LiveMissionJobAcceptedResponse:
+        if self._restart_confirmation_required and not getattr(request, "restart_confirmed", False):
+            raise ValueError("RESTART_CONFIRM_REQUIRED")
+        status = self._drone.status()
+        if not status.get("connected"):
+            raise ValueError("Drone bagli degil. Once drone baglantisini kur.")
+        if self._active_live_job_id:
+            active = self._get_live_job(self._active_live_job_id)
+            if active and active.get("status") in {"QUEUED", "RUNNING"}:
+                raise ValueError("LIVE_MISSION_ALREADY_RUNNING")
+
+        self.clear_mission_stop()
+        job = self._new_live_job(total_parcels=len(request.parcels))
+        job_id = job["job_id"]
+
+        def _runner() -> None:
+            self._active_live_job_id = job_id
+            self._update_live_job(job_id, status="RUNNING", message="Live mission started")
+
+            def _progress_cb(payload: dict) -> None:
+                self._update_live_job(
+                    job_id,
+                    completed_parcels=payload.get("completed_parcels", 0),
+                    active_parcel_id=payload.get("active_parcel_id"),
+                    next_parcel_id=payload.get("next_parcel_id"),
+                    message=payload.get("message", "Running"),
+                )
+
+            try:
+                parcel_result = self._run_parcel_loop(request, use_live_drone=True, progress_cb=_progress_cb)
+                final_response = LiveParcelMissionResponse(
+                    state=parcel_result.state,
+                    total_parcels=parcel_result.total_parcels,
+                    completed_parcels=parcel_result.completed_parcels,
+                    failed_parcels=parcel_result.failed_parcels,
+                    parcel_results=parcel_result.parcel_results,
+                    serviced_targets=parcel_result.serviced_targets,
+                    drone_status=DroneStatusResponse.model_validate(self._drone.status()),
+                )
+                final_status = "STOPPED" if self._stop_requested else parcel_result.state
+                self._update_live_job(
+                    job_id,
+                    status=final_status,
+                    completed_parcels=parcel_result.completed_parcels,
+                    active_parcel_id=None,
+                    next_parcel_id=None,
+                    message="Live mission finished",
+                    result=final_response.model_dump(),
+                )
+            except Exception as exc:
+                self._update_live_job(
+                    job_id,
+                    status="FAILED",
+                    message=str(exc),
+                    active_parcel_id=None,
+                    next_parcel_id=None,
+                )
+            finally:
+                self._active_live_job_id = None
+                self._active_parcel_id = None
+
+        threading.Thread(target=_runner, daemon=True).start()
+
+        return LiveMissionJobAcceptedResponse(
+            job_id=job_id,
+            status=job["status"],
+            message=job["message"],
+            total_parcels=job["total_parcels"],
+        )
+
+    def get_live_mission_job(self, job_id: str) -> LiveMissionJobStatusResponse:
+        job = self._get_live_job(job_id)
+        if not job:
+            raise ValueError("MISSION_JOB_NOT_FOUND")
+        result_obj = None
+        if job.get("result"):
+            result_obj = LiveParcelMissionResponse.model_validate(job["result"])
+        return LiveMissionJobStatusResponse(
+            job_id=job["job_id"],
+            status=job["status"],
+            message=job["message"],
+            created_at=job["created_at"],
+            updated_at=job["updated_at"],
+            total_parcels=job["total_parcels"],
+            completed_parcels=job["completed_parcels"],
+            active_parcel_id=job.get("active_parcel_id"),
+            next_parcel_id=job.get("next_parcel_id"),
+            stop_events=[StopEventLogItem.model_validate(e) for e in job.get("stop_events", [])],
+            result=result_obj,
+        )
+
+    def list_stop_events(self) -> list[StopEventLogItem]:
+        with self._jobs_lock:
+            return [StopEventLogItem.model_validate(e) for e in list(self._stop_events)]
 
     def connect_drone(self, payload: DroneConnectRequest) -> DroneStatusResponse:
         self._drone.configure_backend(payload.backend)
@@ -445,6 +644,19 @@ class OtonomService:
     def drone_stop(self) -> DroneStatusResponse:
         return DroneStatusResponse.model_validate(self._drone.stop())
 
-    def stop_live_mission(self) -> DroneStatusResponse:
+    def stop_live_mission(self, payload: StopMissionRequest) -> DroneStatusResponse:
         self.request_mission_stop()
+        self._restart_confirmation_required = True
+        self._record_stop_event(payload.operator_id, "Operator emergency stop")
         return self.drone_stop()
+
+    def confirm_restart_after_stop(self, payload: RestartConfirmRequest) -> dict[str, str | bool]:
+        if payload.confirmation_token != "CONFIRM":
+            raise ValueError("RESTART_CONFIRM_INVALID")
+        self._restart_confirmation_required = False
+        return {
+            "status": "confirmed",
+            "required": False,
+            "confirmed_by": payload.operator_id,
+            "confirmed_at": self._utc_now(),
+        }

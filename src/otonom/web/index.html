@@ -56,6 +56,10 @@
             <label class="checkbox"><input type="checkbox" name="human_detected" /> Human Detected</label>
             <label class="checkbox"><input type="checkbox" name="manual_approval_required" /> Manual Approval Mode</label>
             <label>
+              Operator ID
+              <input type="text" id="operator-id" value="operator-1" />
+            </label>
+            <label>
               Approved Target IDs (comma)
               <input type="text" name="approved_target_ids" placeholder="P-1:f12-d0,P-1:f13-d0" />
             </label>
@@ -183,6 +187,8 @@
           <article><h3>State</h3><p id="state">-</p></article>
           <article><h3>Serviced Targets</h3><p id="serviced">0</p></article>
           <article><h3>Abort Reason</h3><p id="abort">-</p></article>
+          <article><h3>Live Job ID</h3><p id="live-job-id">-</p></article>
+          <article><h3>Live Job Status</h3><p id="live-job-status">-</p></article>
         </div>
         <h3>State Timeline</h3>
         <ul id="timeline" class="timeline"></ul>
@@ -222,6 +228,22 @@
               </tr>
             </thead>
             <tbody id="interventions"></tbody>
+          </table>
+        </div>
+
+        <h3>Stop Event Log</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Operator</th>
+                <th>Zaman</th>
+                <th>Job</th>
+                <th>Parsel</th>
+                <th>Neden</th>
+              </tr>
+            </thead>
+            <tbody id="stop-events-body"></tbody>
           </table>
         </div>
 

@@ -123,6 +123,7 @@ class ParcelMissionRequest(BaseModel):
     no_spray_zones: List[List[List[float]]] = Field(default_factory=list)
     manual_approval_required: bool = False
     approved_target_ids: List[str] = Field(default_factory=list)
+    restart_confirmed: bool = False
 
 
 class ParcelMissionItem(BaseModel):
@@ -182,3 +183,41 @@ class DroneStatusResponse(BaseModel):
 
 class LiveParcelMissionResponse(ParcelMissionResponse):
     drone_status: DroneStatusResponse
+
+
+class StopMissionRequest(BaseModel):
+    operator_id: str = Field("operator", min_length=1, max_length=64)
+
+
+class RestartConfirmRequest(BaseModel):
+    operator_id: str = Field("operator", min_length=1, max_length=64)
+    confirmation_token: Literal["CONFIRM"] = "CONFIRM"
+
+
+class StopEventLogItem(BaseModel):
+    operator_id: str
+    requested_at: str
+    job_id: str | None = None
+    parcel_id: str | None = None
+    reason: str
+
+
+class LiveMissionJobAcceptedResponse(BaseModel):
+    job_id: str
+    status: str
+    message: str
+    total_parcels: int
+
+
+class LiveMissionJobStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    message: str
+    created_at: str
+    updated_at: str
+    total_parcels: int
+    completed_parcels: int
+    active_parcel_id: str | None = None
+    next_parcel_id: str | None = None
+    stop_events: List[StopEventLogItem] = Field(default_factory=list)
+    result: LiveParcelMissionResponse | None = None

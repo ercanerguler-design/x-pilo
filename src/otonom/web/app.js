@@ -4,6 +4,7 @@ const runParcelsBtn = document.getElementById("run-parcels-btn");
 const runLiveBtn = document.getElementById("run-live-btn");
 const missionStopBtn = document.getElementById("mission-stop-btn");
 const findLocationBtn = document.getElementById("find-location-btn");
+const operatorIdInput = document.getElementById("operator-id");
 const geometryFileInput = document.getElementById("geometry-file");
 const exportGeoJsonBtn = document.getElementById("export-geojson");
 const exportKmlBtn = document.getElementById("export-kml");
@@ -40,6 +41,8 @@ const parcelCountNode = document.getElementById("parcel-count");
 const stateNode = document.getElementById("state");
 const servicedNode = document.getElementById("serviced");
 const abortNode = document.getElementById("abort");
+const liveJobIdNode = document.getElementById("live-job-id");
+const liveJobStatusNode = document.getElementById("live-job-status");
 const timelineNode = document.getElementById("timeline");
 const parcelProgressSummaryNode = document.getElementById("parcel-progress-summary");
 const parcelProgressBodyNode = document.getElementById("parcel-progress-body");
@@ -47,6 +50,7 @@ const liveActiveParcelNode = document.getElementById("live-active-parcel");
 const liveNextParcelNode = document.getElementById("live-next-parcel");
 const liveCompletedParcelsNode = document.getElementById("live-completed-parcels");
 const interventionsNode = document.getElementById("interventions");
+const stopEventsBodyNode = document.getElementById("stop-events-body");
 const rawOutputNode = document.getElementById("raw-output");
 const droneStatusNode = document.getElementById("drone-status");
 const droneBackendValueNode = document.getElementById("drone-backend-value");
@@ -78,6 +82,8 @@ let droneStatusInFlight = false;
 let lastDroneHeadingDeg = 0;
 let routeAnimationActive = false;
 let liveMissionAbortController = null;
+let liveMissionStream = null;
+let liveMissionJobId = null;
 
 function getPayload() {
   const data = new FormData(form);
@@ -831,6 +837,124 @@ function renderMission(data) {
   }
 }
 
+function renderStopEvents(events) {
+  stopEventsBodyNode.innerHTML = "";
+  const rows = Array.isArray(events) ? events : [];
+  if (!rows.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="5">Stop olayi bulunmuyor.</td>`;
+    stopEventsBodyNode.appendChild(tr);
+    return;
+  }
+
+  rows.slice().reverse().forEach((e) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${e.operator_id || "-"}</td>
+      <td>${e.requested_at || "-"}</td>
+      <td>${e.job_id || "-"}</td>
+      <td>${e.parcel_id || "-"}</td>
+      <td>${e.reason || "-"}</td>
+    `;
+    stopEventsBodyNode.appendChild(tr);
+  });
+}
+
+async function refreshStopEvents() {
+  try {
+    const res = await fetch("/api/v1/mission/stop-events");
+    if (!res.ok) {
+      return;
+    }
+    const data = await res.json();
+    renderStopEvents(data || []);
+  } catch (_err) {
+    // ignore stop log refresh failures
+  }
+}
+
+function closeLiveMissionStream() {
+  if (liveMissionStream) {
+    liveMissionStream.close();
+    liveMissionStream = null;
+  }
+}
+
+function applyLiveJobSnapshot(snapshot) {
+  liveJobIdNode.textContent = snapshot.job_id || "-";
+  liveJobStatusNode.textContent = snapshot.status || "-";
+  stateNode.textContent = snapshot.status || "-";
+  if (snapshot.message) {
+    abortNode.textContent = snapshot.message;
+  }
+  updateLiveParcelStatus(
+    snapshot.active_parcel_id || "-",
+    snapshot.next_parcel_id || "-",
+    snapshot.completed_parcels || 0,
+    snapshot.total_parcels || 0,
+  );
+
+  if (Array.isArray(snapshot.stop_events) && snapshot.stop_events.length) {
+    renderStopEvents(snapshot.stop_events);
+  }
+
+  const terminal = ["COMPLETE", "PARTIAL", "FAILED", "STOPPED"];
+  if (!terminal.includes(snapshot.status)) {
+    return;
+  }
+
+  if (snapshot.result) {
+    const data = snapshot.result;
+    const adapted = {
+      state: data.state,
+      states: (data.parcel_results || []).map((p) => `${p.parcel_id}: ${p.state}`),
+      aborted_reason: data.failed_parcels > 0 ? `${data.failed_parcels} parcel failed` : null,
+      serviced_targets: data.serviced_targets || []
+    };
+    renderMission(adapted);
+    renderParcelProgress(data.parcel_results || [], data.completed_parcels, data.total_parcels);
+    renderParcelRoute(data.parcel_results || []);
+    renderDroneStatus(data.drone_status);
+    rawOutputNode.textContent = JSON.stringify(snapshot, null, 2);
+  }
+
+  closeLiveMissionStream();
+  runLiveBtn.disabled = false;
+  if (missionStopBtn) {
+    missionStopBtn.disabled = false;
+  }
+  runLiveBtn.textContent = "Canli Drone Gorevi";
+}
+
+function startLiveMissionStream(jobId) {
+  closeLiveMissionStream();
+  liveMissionStream = new EventSource(`/api/v1/mission/jobs/${jobId}/stream`);
+  liveMissionStream.onmessage = (event) => {
+    try {
+      const snapshot = JSON.parse(event.data);
+      applyLiveJobSnapshot(snapshot);
+    } catch (_err) {
+      // ignore malformed messages
+    }
+  };
+  liveMissionStream.onerror = () => {
+    closeLiveMissionStream();
+  };
+}
+
+async function confirmRestart(operatorId) {
+  const proceed = window.confirm("Acil stop sonrasi yeniden baslatmak icin onay gerekiyor. Devam edilsin mi?");
+  if (!proceed) {
+    return false;
+  }
+  const res = await fetch("/api/v1/mission/restart-confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ operator_id: operatorId, confirmation_token: "CONFIRM" })
+  });
+  return res.ok;
+}
+
 function renderParcelProgress(parcelResults, completedParcels = null, totalParcels = null) {
   const rows = Array.isArray(parcelResults) ? parcelResults : [];
   parcelProgressBodyNode.innerHTML = "";
@@ -966,6 +1090,7 @@ async function runLiveParcelsMission() {
   }
 
   const base = getPayload();
+  const operatorId = (operatorIdInput?.value || "operator").trim() || "operator";
   const payload = {
     parcels: currentParcels,
     safety: base.safety,
@@ -978,6 +1103,7 @@ async function runLiveParcelsMission() {
     no_spray_zones: base.no_spray_zones,
     manual_approval_required: base.manual_approval_required,
     approved_target_ids: base.approved_target_ids,
+    restart_confirmed: false,
   };
 
   runLiveBtn.disabled = true;
@@ -989,24 +1115,39 @@ async function runLiveParcelsMission() {
   runLiveBtn.textContent = "Canli Gorev Isleniyor...";
   liveMissionAbortController = new AbortController();
   try {
-    const res = await fetch("/api/v1/mission/run-parcels-live", {
+    let res = await fetch("/api/v1/mission/run-parcels-live/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
       signal: liveMissionAbortController.signal,
     });
+
+    if (res.status === 409) {
+      const ok = await confirmRestart(operatorId);
+      if (!ok) {
+        throw new Error("Restart confirm canceled");
+      }
+      payload.restart_confirmed = true;
+      res = await fetch("/api/v1/mission/run-parcels-live/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: liveMissionAbortController.signal,
+      });
+    }
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || "Live mission start failed");
+    }
+
     const data = await res.json();
-    const adapted = {
-      state: data.state,
-      states: (data.parcel_results || []).map((p) => `${p.parcel_id}: ${p.state}`),
-      aborted_reason: data.failed_parcels > 0 ? `${data.failed_parcels} parcel failed` : null,
-      serviced_targets: data.serviced_targets || []
-    };
-    renderMission(adapted);
-    renderParcelProgress(data.parcel_results || [], data.completed_parcels, data.total_parcels);
-    renderParcelRoute(data.parcel_results || []);
-    renderDroneStatus(data.drone_status);
-    stateNode.textContent = `${data.state} (${data.completed_parcels}/${data.total_parcels})`;
+    liveMissionJobId = data.job_id;
+    liveJobIdNode.textContent = liveMissionJobId;
+    liveJobStatusNode.textContent = data.status || "QUEUED";
+    stateNode.textContent = "LIVE_JOB_STARTED";
+    abortNode.textContent = data.message || "Live mission queued";
+    startLiveMissionStream(liveMissionJobId);
   } catch (err) {
     if (err?.name === "AbortError") {
       stateNode.textContent = "STOPPED_BY_OPERATOR";
@@ -1029,7 +1170,12 @@ async function stopMissionNow() {
   const prevText = missionStopBtn.textContent;
   missionStopBtn.textContent = "Durduruluyor...";
   try {
-    const res = await fetch("/api/v1/mission/stop", { method: "POST" });
+    const operatorId = (operatorIdInput?.value || "operator").trim() || "operator";
+    const res = await fetch("/api/v1/mission/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operator_id: operatorId }),
+    });
     const data = await res.json();
     renderDroneStatus(data);
     rawOutputNode.textContent = JSON.stringify(data, null, 2);
@@ -1038,6 +1184,7 @@ async function stopMissionNow() {
     if (liveMissionAbortController) {
       liveMissionAbortController.abort();
     }
+    await refreshStopEvents();
   } finally {
     missionStopBtn.disabled = false;
     missionStopBtn.textContent = prevText || "Gorevi Durdur";
@@ -1397,6 +1544,7 @@ function onPlaybackManualChange() {
 }
 
 window.addEventListener("beforeunload", () => {
+  closeLiveMissionStream();
   stopRouteAnimation();
   removeDroneMarker();
   pausePlayback();
@@ -1438,3 +1586,4 @@ droneAutoRefreshInput.addEventListener("change", onDroneAutoRefreshSettingsChang
 droneRefreshIntervalInput.addEventListener("change", onDroneAutoRefreshSettingsChanged);
 refreshDroneStatus();
 startDroneStatusAutoRefresh();
+refreshStopEvents();
