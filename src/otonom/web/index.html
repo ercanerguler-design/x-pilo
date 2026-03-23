@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>X-pilo Mission OS</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"
+    />
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <div class="background-glow"></div>
+    <main class="layout">
+      <header class="hero card">
+        <div class="brand-lockup">
+          <div class="brand-logo" aria-hidden="true">XP</div>
+          <div>
+            <p class="badge">X-pilo Mission OS</p>
+            <h1>X-pilo</h1>
+          </div>
+        </div>
+        <p>
+          X-pilo ile her parselde tam kapsama, akilli mudahale ve guvenli drone
+          operasyonunu tek merkezden yonet.
+        </p>
+      </header>
+
+      <section class="card controls">
+        <h2>Gorev Parametreleri</h2>
+        <form id="mission-form">
+          <div class="grid">
+            <label>Latitude <input type="number" step="0.000001" name="lat" value="39.9208" /></label>
+            <label>Longitude <input type="number" step="0.000001" name="lon" value="32.8541" /></label>
+            <label>Altitude (m) <input type="number" step="0.1" name="alt_m" value="8" /></label>
+            <label>Yaw (deg) <input type="number" step="0.1" name="yaw_deg" value="0" /></label>
+            <label>Frame Count <input type="number" step="1" min="1" max="500" name="frame_count" value="10" /></label>
+            <label>Battery (%) <input type="number" step="1" min="0" max="100" name="battery_pct" value="82" /></label>
+            <label>Wind (m/s) <input type="number" step="0.1" min="0" name="wind_mps" value="4.2" /></label>
+            <label>Wind Dir (deg) <input type="number" step="1" min="0" max="359" name="wind_dir_deg" value="45" /></label>
+            <label class="checkbox"><input type="checkbox" name="rtk_fix" checked /> RTK Fix</label>
+            <label class="checkbox"><input type="checkbox" name="link_ok" checked /> Telemetry Link</label>
+            <label class="checkbox"><input type="checkbox" name="human_detected" /> Human Detected</label>
+            <label class="checkbox"><input type="checkbox" name="manual_approval_required" /> Manual Approval Mode</label>
+            <label>
+              Approved Target IDs (comma)
+              <input type="text" name="approved_target_ids" placeholder="P-1:f12-d0,P-1:f13-d0" />
+            </label>
+            <label class="checkbox"><input type="checkbox" name="use_drawn_no_spray" /> Drawn Polygon as No-Spray Zone</label>
+          </div>
+          <div class="actions">
+            <button class="btn primary" type="submit">Gorevi Baslat</button>
+            <button class="btn" id="find-location-btn" type="button">Konumu Bul</button>
+            <button class="btn" id="run-parcels-btn" type="button">Tum Parselleri Tara</button>
+            <button class="btn" id="run-live-btn" type="button">Canli Drone Gorevi</button>
+            <button class="btn" id="simulate-btn" type="button">Detection Simulate</button>
+          </div>
+        </form>
+        <div class="drone-panel">
+          <h3>Drone Control Center</h3>
+          <div class="drone-grid">
+            <label>
+              Backend
+              <select id="drone-backend">
+                <option value="sim" selected>Simulation</option>
+                <option value="mavsdk">MAVSDK</option>
+              </select>
+            </label>
+            <label>
+              Connection URI
+              <input id="drone-uri" type="text" value="udp://:14540" />
+            </label>
+            <button class="btn" id="drone-connect-btn" type="button">Drone Baglan</button>
+            <button class="btn" id="drone-disconnect-btn" type="button">Baglantiyi Kes</button>
+            <button class="btn" id="drone-refresh-btn" type="button">Durum Yenile</button>
+            <button class="btn" id="drone-arm-btn" type="button">Arm</button>
+            <button class="btn" id="drone-takeoff-btn" type="button">Takeoff</button>
+            <button class="btn" id="drone-goto-btn" type="button">Goto Center</button>
+            <button class="btn" id="drone-land-btn" type="button">Land</button>
+            <button class="btn danger" id="drone-failsafe-btn" type="button">Failsafe RTL</button>
+            <label class="checkbox"><input id="drone-auto-refresh" type="checkbox" checked /> Otomatik Durum</label>
+            <label>
+              Yenileme (sn)
+              <input id="drone-refresh-interval" type="number" min="1" max="30" step="1" value="2" />
+            </label>
+          </div>
+          <div class="drone-kpis">
+            <article><h4>Status</h4><p id="drone-status">DISCONNECTED</p></article>
+            <article><h4>Backend</h4><p id="drone-backend-value">sim</p></article>
+            <article><h4>Battery</h4><p id="drone-battery">-</p></article>
+            <article><h4>Speed</h4><p id="drone-speed">-</p></article>
+            <article><h4>Telemetry</h4><p id="drone-telemetry">-</p></article>
+            <article><h4>Spray Volume</h4><p id="spray-volume">0 ml</p></article>
+          </div>
+        </div>
+      </section>
+
+      <section class="card map-panel">
+        <div class="map-head">
+          <div>
+            <h2>Operasyon Haritasi</h2>
+            <p>Haritadan merkez sec, alan ciz ve gorev sonucundaki hedefleri canli gor.</p>
+          </div>
+          <div class="map-help">Cizim: Polygon veya Rectangle | Merkez: Haritaya tikla</div>
+        </div>
+        <div class="map-toolbar">
+          <label class="parcel-label">Rows <input id="parcel-rows" type="number" min="1" max="100" value="4" /></label>
+          <label class="parcel-label">Cols <input id="parcel-cols" type="number" min="1" max="100" value="4" /></label>
+          <label class="parcel-label">
+            Tarama Yon
+            <select id="scan-orientation">
+              <option value="horizontal" selected>Yatay</option>
+              <option value="vertical">Dikey</option>
+            </select>
+          </label>
+          <label class="parcel-label">Lane m <input id="lane-spacing" type="number" min="1" max="20" step="0.5" value="4" /></label>
+          <label class="parcel-label">Sample m <input id="sample-spacing" type="number" min="1" max="30" step="0.5" value="6" /></label>
+          <label class="parcel-label">
+            Rota Modu
+            <select id="route-quality">
+              <option value="auto" selected>Otomatik</option>
+              <option value="performance">Performans</option>
+              <option value="detailed">Detayli</option>
+            </select>
+          </label>
+          <button id="parcelize-btn" class="btn" type="button">Parsel Uret</button>
+          <label class="file-input">
+            GeoJSON/KML Yukle
+            <input id="geometry-file" type="file" accept=".geojson,.json,.kml" />
+          </label>
+          <button id="export-geojson" class="btn" type="button">GeoJSON Export</button>
+          <button id="export-kml" class="btn" type="button">KML Export</button>
+          <button id="toggle-heatmap" class="btn" type="button">Heatmap Ac/Kapat</button>
+        </div>
+        <div id="map"></div>
+        <div class="map-meta">
+          <article>
+            <h3>Cizilen Alan</h3>
+            <p id="drawn-area">0.00 ha</p>
+          </article>
+          <article>
+            <h3>Secili Merkez</h3>
+            <p id="selected-center">39.920800, 32.854100</p>
+          </article>
+          <article>
+            <h3>Hedef Marker</h3>
+            <p id="target-count">0</p>
+          </article>
+          <article>
+            <h3>Parsel Sayisi</h3>
+            <p id="parcel-count">0</p>
+          </article>
+        </div>
+        <div class="playback">
+          <h3>Gorev Playback</h3>
+          <div class="playback-controls">
+            <button id="playback-play" class="btn" type="button">Oynat</button>
+            <button id="playback-pause" class="btn" type="button">Duraklat</button>
+            <button id="spray-preview-btn" class="btn" type="button">Spray Preview</button>
+            <input id="playback-slider" type="range" min="0" max="0" step="1" value="0" />
+            <span id="playback-label">Adim: 0 / 0</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card result">
+        <h2>Sonuclar</h2>
+        <div class="kpi-row">
+          <article><h3>State</h3><p id="state">-</p></article>
+          <article><h3>Serviced Targets</h3><p id="serviced">0</p></article>
+          <article><h3>Abort Reason</h3><p id="abort">-</p></article>
+        </div>
+        <h3>State Timeline</h3>
+        <ul id="timeline" class="timeline"></ul>
+
+        <h3>Parsel Ilerleme</h3>
+        <p id="parcel-progress-summary">Parsel gorevi henuz calismadi.</p>
+        <div class="parcel-live-status">
+          <article><h4>Aktif Parsel</h4><p id="live-active-parcel">-</p></article>
+          <article><h4>Siradaki Parsel</h4><p id="live-next-parcel">-</p></article>
+          <article><h4>Tamamlanan</h4><p id="live-completed-parcels">0</p></article>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Parsel</th>
+                <th>Durum</th>
+                <th>Serviced</th>
+                <th>Not</th>
+              </tr>
+            </thead>
+            <tbody id="parcel-progress-body"></tbody>
+          </table>
+        </div>
+
+        <h3>Intervention Log</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Target</th>
+                <th>Parcel</th>
+                <th>Method</th>
+                <th>Duration</th>
+                <th>Success</th>
+                <th>Note</th>
+              </tr>
+            </thead>
+            <tbody id="interventions"></tbody>
+          </table>
+        </div>
+
+        <h3>Raw JSON</h3>
+        <pre id="raw-output">Heniz calistirilmadi.</pre>
+      </section>
+    </main>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"
+    ></script>
+    <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+    <script src="/assets/app.js" type="module"></script>
+  </body>
+</html>

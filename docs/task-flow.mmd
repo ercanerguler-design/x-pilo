@@ -1,0 +1,16 @@
+flowchart TD
+    A[Preflight Check] --> B[Survey]
+    B --> C[Detection + Geo Tag]
+    C --> D[Target Prioritization]
+    D --> E[Approach]
+    E --> F[Align]
+    F --> G[Safe Intervention]
+    G --> H[Verify]
+    H --> I{More Targets?}
+    I -- Yes --> E
+    I -- No --> J[Complete + Report]
+
+    A -. fail .-> X[Abort + RTL]
+    E -. human detected .-> X
+    F -. wind/battery fail .-> X
+    G -. guard fail .-> X

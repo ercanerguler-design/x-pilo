@@ -1,0 +1,13 @@
+intervention_method: micro_spray
+max_action_duration_sec: 2.5
+max_retry_per_target: 2
+model_backend_preference: tensorrt
+model_path: models/weed_yolo.onnx
+tensorrt_engine_path: models/weed_yolo.engine
+
+thresholds:
+  min_confidence: 0.60
+  action_confidence: 0.72
+  precision_confidence: 0.86
+  max_wind_mps: 8.0
+  min_battery_pct: 30.0
