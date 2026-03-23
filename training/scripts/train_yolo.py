@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,11 +30,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--name", default="x-pilo-weeds")
     parser.add_argument("--report-json", default="training/reports/latest_eval.json")
     parser.add_argument("--report-md", default="training/reports/latest_eval.md")
+    parser.add_argument("--run-label-qc", action="store_true", default=True)
+    parser.add_argument("--strict-label-qc", action="store_true", default=False)
+    parser.add_argument("--run-threshold-tuning", action="store_true", default=True)
+    parser.add_argument("--tuning-min-recall", type=float, default=0.35)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+
+    if args.run_label_qc:
+        qc_cmd = [
+            sys.executable,
+            "training/scripts/label_qc.py",
+            "--data",
+            args.data,
+            "--report-json",
+            "training/reports/label_qc_report.json",
+            "--report-md",
+            "training/reports/label_qc_report.md",
+        ]
+        if args.strict_label_qc:
+            qc_cmd.append("--strict")
+        subprocess.run(qc_cmd, check=args.strict_label_qc)
 
     try:
         from ultralytics import YOLO  # type: ignore[import-not-found]
@@ -119,6 +140,25 @@ def main() -> None:
 
     print(f"Saved report json: {report_json_path}")
     print(f"Saved report md: {report_md_path}")
+
+    if args.run_threshold_tuning:
+        tuning_cmd = [
+            sys.executable,
+            "training/scripts/tune_thresholds.py",
+            "--data",
+            args.data,
+            "--weights",
+            report["best_weights"],
+            "--min-recall",
+            str(args.tuning_min_recall),
+            "--report-json",
+            "training/reports/threshold_tuning.json",
+            "--report-md",
+            "training/reports/threshold_tuning.md",
+            "--update-mission-config",
+            "configs/mission.yaml",
+        ]
+        subprocess.run(tuning_cmd, check=False)
 
 
 if __name__ == "__main__":

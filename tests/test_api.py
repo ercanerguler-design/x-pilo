@@ -112,6 +112,18 @@ def test_drone_health_endpoints() -> None:
     assert "ready" in ready.json()
 
 
+def test_drone_self_check_endpoint() -> None:
+    client.post("/api/v1/drone/connect", json={"backend": "sim", "connection_uri": "udp://:14540"})
+    response = client.post(
+        "/api/v1/drone/health/self-check",
+        json={"operator_id": "qa-operator", "camera_ok": True, "payload_ok": True},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["camera_ok"] is True
+    assert body["payload_ok"] is True
+
+
 def test_live_parcel_mission_endpoint() -> None:
     client.post("/api/v1/drone/connect", json={"backend": "sim", "connection_uri": "udp://:14540"})
     payload = {

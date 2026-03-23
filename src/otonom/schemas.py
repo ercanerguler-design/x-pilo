@@ -181,6 +181,20 @@ class DroneStatusResponse(BaseModel):
     telemetry: DroneTelemetryResponse
 
 
+class DroneSelfCheckRequest(BaseModel):
+    operator_id: str = Field("operator", min_length=1, max_length=64)
+    camera_ok: bool | None = None
+    payload_ok: bool | None = None
+
+
+class DroneSelfCheckResponse(BaseModel):
+    backend: str
+    camera_ok: bool
+    payload_ok: bool
+    source: str
+    checked_at: str
+
+
 class LiveParcelMissionResponse(ParcelMissionResponse):
     drone_status: DroneStatusResponse
 

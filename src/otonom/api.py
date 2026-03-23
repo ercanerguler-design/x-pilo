@@ -12,6 +12,8 @@ from .schemas import (
     DroneConnectRequest,
     DroneFailsafeRequest,
     DroneGotoRequest,
+    DroneSelfCheckRequest,
+    DroneSelfCheckResponse,
     DroneStatusResponse,
     DroneTakeoffRequest,
     GeometryExportRequest,
@@ -194,6 +196,11 @@ def drone_health() -> dict:
 @app.get("/api/v1/drone/health/ready")
 def drone_health_ready() -> dict:
     return service.drone_ready_for_mission()
+
+
+@app.post("/api/v1/drone/health/self-check", response_model=DroneSelfCheckResponse)
+def drone_health_self_check(payload: DroneSelfCheckRequest) -> DroneSelfCheckResponse:
+    return service.drone_run_self_check(payload)
 
 
 @app.post("/api/v1/drone/arm", response_model=DroneStatusResponse)

@@ -25,6 +25,8 @@ from .schemas import (
     DroneConnectRequest,
     DroneFailsafeRequest,
     DroneGotoRequest,
+    DroneSelfCheckRequest,
+    DroneSelfCheckResponse,
     DroneStatusResponse,
     DroneTakeoffRequest,
     GeometryExportRequest,
@@ -70,6 +72,10 @@ class OtonomService:
         self._active_live_job_id: str | None = None
         self._active_parcel_id: str | None = None
         self._stop_events: list[dict] = []
+        self._camera_self_check_ok: bool | None = None
+        self._payload_self_check_ok: bool | None = None
+        self._self_check_source: str = "none"
+        self._self_check_checked_at: str | None = None
 
     @staticmethod
     def _utc_now() -> str:
@@ -618,6 +624,16 @@ class OtonomService:
 
     def connect_drone(self, payload: DroneConnectRequest) -> DroneStatusResponse:
         self._drone.configure_backend(payload.backend)
+        if payload.backend == "sim":
+            self._camera_self_check_ok = True
+            self._payload_self_check_ok = True
+            self._self_check_source = "auto-sim"
+            self._self_check_checked_at = self._utc_now()
+        else:
+            self._camera_self_check_ok = None
+            self._payload_self_check_ok = None
+            self._self_check_source = "none"
+            self._self_check_checked_at = None
         return DroneStatusResponse.model_validate(self._drone.connect(payload.connection_uri))
 
     def disconnect_drone(self) -> DroneStatusResponse:
@@ -652,15 +668,25 @@ class OtonomService:
         battery = float(telemetry.get("battery_pct", 0.0) or 0.0)
         gps_ok = telemetry.get("lat") not in (None, 0.0) and telemetry.get("lon") not in (None, 0.0)
         battery_ok = battery >= float(self.config.thresholds.min_battery_pct)
+        backend = str(status.get("backend", "sim"))
+
+        camera_ok = self._camera_self_check_ok
+        payload_ok = self._payload_self_check_ok
+        if backend == "sim":
+            camera_ok = True if camera_ok is None else camera_ok
+            payload_ok = True if payload_ok is None else payload_ok
+
+        camera_ok = bool(camera_ok)
+        payload_ok = bool(payload_ok)
 
         health_state = "healthy"
         if not connected:
             health_state = "offline"
-        elif not link_ok or not battery_ok:
+        elif not link_ok or not battery_ok or not camera_ok or not payload_ok:
             health_state = "degraded"
 
         return {
-            "backend": status.get("backend"),
+            "backend": backend,
             "connected": connected,
             "state": status.get("state"),
             "health": health_state,
@@ -668,6 +694,12 @@ class OtonomService:
                 "telemetry_link": link_ok,
                 "battery_ok": battery_ok,
                 "gps_fix_estimate": bool(gps_ok),
+                "camera_self_check": camera_ok,
+                "payload_self_check": payload_ok,
+            },
+            "self_check": {
+                "source": self._self_check_source,
+                "checked_at": self._self_check_checked_at,
             },
             "telemetry": telemetry,
             "min_battery_pct": self.config.thresholds.min_battery_pct,
@@ -681,12 +713,38 @@ class OtonomService:
             and checks.get("telemetry_link")
             and checks.get("battery_ok")
             and checks.get("gps_fix_estimate")
+            and checks.get("camera_self_check")
+            and checks.get("payload_self_check")
         )
         return {
             "ready": ready,
             "reason": "OK" if ready else "Drone health checks not satisfied",
             "health": health,
         }
+
+    def drone_run_self_check(self, payload: DroneSelfCheckRequest) -> DroneSelfCheckResponse:
+        status = self._drone.status()
+        backend = str(status.get("backend", "sim"))
+
+        if backend == "sim":
+            camera_ok = True if payload.camera_ok is None else bool(payload.camera_ok)
+            payload_ok = True if payload.payload_ok is None else bool(payload.payload_ok)
+        else:
+            camera_ok = False if payload.camera_ok is None else bool(payload.camera_ok)
+            payload_ok = False if payload.payload_ok is None else bool(payload.payload_ok)
+
+        self._camera_self_check_ok = camera_ok
+        self._payload_self_check_ok = payload_ok
+        self._self_check_source = payload.operator_id
+        self._self_check_checked_at = self._utc_now()
+
+        return DroneSelfCheckResponse(
+            backend=backend,
+            camera_ok=camera_ok,
+            payload_ok=payload_ok,
+            source=self._self_check_source,
+            checked_at=self._self_check_checked_at,
+        )
 
     def stop_live_mission(self, payload: StopMissionRequest) -> DroneStatusResponse:
         self.request_mission_stop()
