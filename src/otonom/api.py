@@ -71,6 +71,11 @@ def run_mission_parcels_live(payload: ParcelMissionRequest) -> LiveParcelMission
     return service.run_live_parcel_mission(payload)
 
 
+@app.post("/api/v1/mission/stop", response_model=DroneStatusResponse)
+def stop_live_mission() -> DroneStatusResponse:
+    return service.stop_live_mission()
+
+
 @app.post("/api/v1/detection/simulate", response_model=SimulateDetectionResponse)
 def simulate_detection(payload: SimulateDetectionRequest) -> SimulateDetectionResponse:
     return service.simulate_detection(payload)
@@ -141,6 +146,11 @@ def land_drone() -> DroneStatusResponse:
 @app.post("/api/v1/drone/failsafe", response_model=DroneStatusResponse)
 def failsafe_drone(payload: DroneFailsafeRequest) -> DroneStatusResponse:
     return service.drone_failsafe(payload)
+
+
+@app.post("/api/v1/drone/stop", response_model=DroneStatusResponse)
+def stop_drone() -> DroneStatusResponse:
+    return service.drone_stop()
 
 
 app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")

@@ -48,6 +48,9 @@ class DroneBridge:
     def failsafe(self, action: str) -> DroneStatus:
         raise NotImplementedError
 
+    def stop(self) -> DroneStatus:
+        raise NotImplementedError
+
     def status(self) -> DroneStatus:
         raise NotImplementedError
 
@@ -55,6 +58,8 @@ class DroneBridge:
 class SimulatedDroneBridge(DroneBridge):
     def __init__(self) -> None:
         self._connected = False
+        self._state = "DISCONNECTED"
+        self._message = "Simulated drone not connected"
         self._telemetry = DroneTelemetry(
             lat=39.9208,
             lon=32.8541,
@@ -69,18 +74,26 @@ class SimulatedDroneBridge(DroneBridge):
     def connect(self, connection_uri: str | None = None) -> DroneStatus:
         _ = connection_uri
         self._connected = True
+        self._state = "CONNECTED"
+        self._message = "Simulated drone ready"
         self._telemetry.link_ok = True
         self._telemetry.last_update_s = time.time()
         return self.status()
 
     def disconnect(self) -> DroneStatus:
         self._connected = False
+        self._state = "DISCONNECTED"
+        self._message = "Simulated drone not connected"
         self._telemetry.ground_speed_mps = 0.0
         self._telemetry.last_update_s = time.time()
         return self.status()
 
     def fly_to(self, lat: float, lon: float, alt_m: float) -> DroneStatus:
         if not self._connected:
+            return self.status()
+        if self._state in {"STOPPED", "FAILSAFE_HOLD"}:
+            self._telemetry.ground_speed_mps = 0.0
+            self._telemetry.last_update_s = time.time()
             return self.status()
         self._telemetry.lat = lat
         self._telemetry.lon = lon
@@ -89,11 +102,15 @@ class SimulatedDroneBridge(DroneBridge):
         self._telemetry.heading_deg = (self._telemetry.heading_deg + 25.0) % 360.0
         self._telemetry.battery_pct = max(5.0, round(self._telemetry.battery_pct - 0.3, 2))
         self._telemetry.last_update_s = time.time()
+        self._state = "IN_MISSION"
+        self._message = "Simulated waypoint reached"
         return self.status()
 
     def arm(self) -> DroneStatus:
         if not self._connected:
             return self.status()
+        self._state = "ARMED"
+        self._message = "Simulated arm success"
         self._telemetry.last_update_s = time.time()
         return DroneStatus(
             backend="sim",
@@ -109,6 +126,8 @@ class SimulatedDroneBridge(DroneBridge):
         self._telemetry.alt_m = max(1.0, alt_m)
         self._telemetry.ground_speed_mps = 2.5
         self._telemetry.last_update_s = time.time()
+        self._state = "AIRBORNE"
+        self._message = f"Simulated takeoff to {alt_m:.1f}m"
         return DroneStatus(
             backend="sim",
             connected=True,
@@ -123,6 +142,8 @@ class SimulatedDroneBridge(DroneBridge):
         self._telemetry.alt_m = 0.0
         self._telemetry.ground_speed_mps = 0.0
         self._telemetry.last_update_s = time.time()
+        self._state = "LANDED"
+        self._message = "Simulated landing complete"
         return DroneStatus(
             backend="sim",
             connected=True,
@@ -139,6 +160,8 @@ class SimulatedDroneBridge(DroneBridge):
             self._telemetry.alt_m = 6.0
             self._telemetry.ground_speed_mps = 5.0
             self._telemetry.last_update_s = time.time()
+            self._state = "FAILSAFE_RTL"
+            self._message = "Simulated RTL triggered"
             return DroneStatus(
                 backend="sim",
                 connected=self._connected,
@@ -150,6 +173,8 @@ class SimulatedDroneBridge(DroneBridge):
             return self.land()
         self._telemetry.ground_speed_mps = 0.0
         self._telemetry.last_update_s = time.time()
+        self._state = "FAILSAFE_HOLD"
+        self._message = "Simulated hold triggered"
         return DroneStatus(
             backend="sim",
             connected=self._connected,
@@ -158,9 +183,24 @@ class SimulatedDroneBridge(DroneBridge):
             telemetry=self._telemetry,
         )
 
+    def stop(self) -> DroneStatus:
+        if not self._connected:
+            return self.status()
+        self._telemetry.ground_speed_mps = 0.0
+        self._telemetry.last_update_s = time.time()
+        self._state = "STOPPED"
+        self._message = "Operator stop requested"
+        return DroneStatus(
+            backend="sim",
+            connected=True,
+            state="STOPPED",
+            message="Operator stop requested",
+            telemetry=self._telemetry,
+        )
+
     def status(self) -> DroneStatus:
-        state = "CONNECTED" if self._connected else "DISCONNECTED"
-        message = "Simulated drone ready" if self._connected else "Simulated drone not connected"
+        state = self._state if self._connected else "DISCONNECTED"
+        message = self._message if self._connected else "Simulated drone not connected"
         return DroneStatus(
             backend="sim",
             connected=self._connected,
@@ -173,6 +213,8 @@ class SimulatedDroneBridge(DroneBridge):
 class MavsdkDroneBridge(DroneBridge):
     def __init__(self) -> None:
         self._connected = False
+        self._state = "DISCONNECTED"
+        self._message = "MAVSDK not connected"
         self._system = None
         self._telemetry = DroneTelemetry(
             lat=0.0,
@@ -245,14 +287,22 @@ class MavsdkDroneBridge(DroneBridge):
             await self._system.action.return_to_launch()
         elif action_name == "land":
             await self._system.action.land()
+        elif action_name == "hold":
+            hold_fn = getattr(self._system.action, "hold", None)
+            if hold_fn is not None:
+                await hold_fn()
         await self._refresh_async()
 
     def connect(self, connection_uri: str | None = None) -> DroneStatus:
         self._run(self._connect_async(connection_uri))
+        self._state = "CONNECTED"
+        self._message = "MAVSDK drone ready"
         return self.status()
 
     def disconnect(self) -> DroneStatus:
         self._connected = False
+        self._state = "DISCONNECTED"
+        self._message = "MAVSDK not connected"
         self._telemetry.link_ok = False
         self._telemetry.ground_speed_mps = 0.0
         self._telemetry.last_update_s = time.time()
@@ -261,13 +311,21 @@ class MavsdkDroneBridge(DroneBridge):
     def fly_to(self, lat: float, lon: float, alt_m: float) -> DroneStatus:
         if not self._connected:
             return self.status()
+        if self._state in {"STOPPED", "FAILSAFE_HOLD"}:
+            self._telemetry.ground_speed_mps = 0.0
+            self._telemetry.last_update_s = time.time()
+            return self.status()
         self._run(self._goto_async(lat, lon, alt_m))
+        self._state = "IN_MISSION"
+        self._message = "MAVSDK waypoint command sent"
         return self.status()
 
     def arm(self) -> DroneStatus:
         if not self._connected:
             return self.status()
         self._run(self._arm_async())
+        self._state = "ARMED"
+        self._message = "MAVSDK arm success"
         return DroneStatus(
             backend="mavsdk",
             connected=True,
@@ -280,6 +338,8 @@ class MavsdkDroneBridge(DroneBridge):
         if not self._connected:
             return self.status()
         self._run(self._takeoff_async(alt_m))
+        self._state = "AIRBORNE"
+        self._message = f"MAVSDK takeoff to {alt_m:.1f}m"
         return DroneStatus(
             backend="mavsdk",
             connected=True,
@@ -292,6 +352,8 @@ class MavsdkDroneBridge(DroneBridge):
         if not self._connected:
             return self.status()
         self._run(self._land_async())
+        self._state = "LANDED"
+        self._message = "MAVSDK landing command sent"
         return DroneStatus(
             backend="mavsdk",
             connected=True,
@@ -304,6 +366,8 @@ class MavsdkDroneBridge(DroneBridge):
         if not self._connected:
             return self.status()
         self._run(self._failsafe_async(action))
+        self._state = f"FAILSAFE_{action.upper()}"
+        self._message = f"MAVSDK failsafe {action} command sent"
         return DroneStatus(
             backend="mavsdk",
             connected=True,
@@ -312,9 +376,25 @@ class MavsdkDroneBridge(DroneBridge):
             telemetry=self._telemetry,
         )
 
+    def stop(self) -> DroneStatus:
+        if not self._connected:
+            return self.status()
+        self._run(self._failsafe_async("hold"))
+        self._telemetry.ground_speed_mps = 0.0
+        self._telemetry.last_update_s = time.time()
+        self._state = "STOPPED"
+        self._message = "Operator stop requested"
+        return DroneStatus(
+            backend="mavsdk",
+            connected=True,
+            state="STOPPED",
+            message="Operator stop requested",
+            telemetry=self._telemetry,
+        )
+
     def status(self) -> DroneStatus:
-        state = "CONNECTED" if self._connected else "DISCONNECTED"
-        message = "MAVSDK drone ready" if self._connected else "MAVSDK not connected"
+        state = self._state if self._connected else "DISCONNECTED"
+        message = self._message if self._connected else "MAVSDK not connected"
         return DroneStatus(
             backend="mavsdk",
             connected=self._connected,
@@ -375,3 +455,6 @@ class DroneManager:
 
     def failsafe(self, action: str) -> dict:
         return self._as_payload(self._backend.failsafe(action))
+
+    def stop(self) -> dict:
+        return self._as_payload(self._backend.stop())

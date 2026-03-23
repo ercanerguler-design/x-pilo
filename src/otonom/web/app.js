@@ -2,6 +2,7 @@
 const simulateBtn = document.getElementById("simulate-btn");
 const runParcelsBtn = document.getElementById("run-parcels-btn");
 const runLiveBtn = document.getElementById("run-live-btn");
+const missionStopBtn = document.getElementById("mission-stop-btn");
 const findLocationBtn = document.getElementById("find-location-btn");
 const geometryFileInput = document.getElementById("geometry-file");
 const exportGeoJsonBtn = document.getElementById("export-geojson");
@@ -76,6 +77,7 @@ let droneStatusTimer = null;
 let droneStatusInFlight = false;
 let lastDroneHeadingDeg = 0;
 let routeAnimationActive = false;
+let liveMissionAbortController = null;
 
 function getPayload() {
   const data = new FormData(form);
@@ -979,14 +981,19 @@ async function runLiveParcelsMission() {
   };
 
   runLiveBtn.disabled = true;
+  if (missionStopBtn) {
+    missionStopBtn.disabled = false;
+  }
   totalSprayMl = 0;
   sprayVolumeNode.textContent = "0 ml";
   runLiveBtn.textContent = "Canli Gorev Isleniyor...";
+  liveMissionAbortController = new AbortController();
   try {
     const res = await fetch("/api/v1/mission/run-parcels-live", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: liveMissionAbortController.signal,
     });
     const data = await res.json();
     const adapted = {
@@ -1000,9 +1007,40 @@ async function runLiveParcelsMission() {
     renderParcelRoute(data.parcel_results || []);
     renderDroneStatus(data.drone_status);
     stateNode.textContent = `${data.state} (${data.completed_parcels}/${data.total_parcels})`;
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      stateNode.textContent = "STOPPED_BY_OPERATOR";
+      abortNode.textContent = "Mission stop requested by operator";
+      return;
+    }
+    throw err;
   } finally {
+    liveMissionAbortController = null;
     runLiveBtn.disabled = false;
+    if (missionStopBtn) {
+      missionStopBtn.disabled = false;
+    }
     runLiveBtn.textContent = "Canli Drone Gorevi";
+  }
+}
+
+async function stopMissionNow() {
+  missionStopBtn.disabled = true;
+  const prevText = missionStopBtn.textContent;
+  missionStopBtn.textContent = "Durduruluyor...";
+  try {
+    const res = await fetch("/api/v1/mission/stop", { method: "POST" });
+    const data = await res.json();
+    renderDroneStatus(data);
+    rawOutputNode.textContent = JSON.stringify(data, null, 2);
+    stateNode.textContent = "STOPPING";
+    abortNode.textContent = "Mission stop requested by operator";
+    if (liveMissionAbortController) {
+      liveMissionAbortController.abort();
+    }
+  } finally {
+    missionStopBtn.disabled = false;
+    missionStopBtn.textContent = prevText || "Gorevi Durdur";
   }
 }
 
@@ -1386,6 +1424,7 @@ playbackSlider.addEventListener("input", onPlaybackManualChange);
 parcelizeBtn.addEventListener("click", parcelizeGeometry);
 runParcelsBtn.addEventListener("click", runParcelsMission);
 runLiveBtn.addEventListener("click", runLiveParcelsMission);
+missionStopBtn?.addEventListener("click", stopMissionNow);
 findLocationBtn?.addEventListener("click", findCurrentLocation);
 droneConnectBtn.addEventListener("click", connectDrone);
 droneDisconnectBtn.addEventListener("click", disconnectDrone);

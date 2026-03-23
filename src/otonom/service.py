@@ -55,6 +55,13 @@ class OtonomService:
             backend_preference=self.config.model_backend_preference,
         )
         self._drone = DroneManager()
+        self._stop_requested = False
+
+    def request_mission_stop(self) -> None:
+        self._stop_requested = True
+
+    def clear_mission_stop(self) -> None:
+        self._stop_requested = False
 
     def reload_config(self) -> None:
         self.config = load_config(self.config_path)
@@ -273,6 +280,18 @@ class OtonomService:
         approved = set(request.approved_target_ids)
 
         for parcel in request.parcels:
+            if self._stop_requested:
+                parcel_results.append(
+                    ParcelMissionItem(
+                        parcel_id=parcel.parcel_id,
+                        state="PARTIAL",
+                        aborted_reason="Mission stop requested by operator",
+                        serviced_target_count=0,
+                        scan_path=[],
+                    )
+                )
+                continue
+
             area = AreaGeometry(coordinates=[(float(lat), float(lon)) for lat, lon in parcel.coordinates])
             scan_path = self._generate_scan_path(
                 polygon=area.coordinates,
@@ -288,6 +307,13 @@ class OtonomService:
             parcel_time_offset = 0.0
 
             for wp_idx, (wp_lat, wp_lon) in enumerate(scan_path, start=1):
+                if self._stop_requested:
+                    parcel_state = "PARTIAL"
+                    parcel_abort_reason = "Mission stop requested by operator"
+                    if use_live_drone:
+                        self._drone.stop()
+                    break
+
                 if use_live_drone:
                     self._drone.fly_to(wp_lat, wp_lon, request.alt_m)
                     status = self._drone.status()
@@ -372,9 +398,11 @@ class OtonomService:
         )
 
     def run_mission_parcels(self, request: ParcelMissionRequest) -> ParcelMissionResponse:
+        self.clear_mission_stop()
         return self._run_parcel_loop(request, use_live_drone=False)
 
     def run_live_parcel_mission(self, request: ParcelMissionRequest) -> LiveParcelMissionResponse:
+        self.clear_mission_stop()
         status = self._drone.status()
         if not status.get("connected"):
             raise ValueError("Drone bagli degil. Once drone baglantisini kur.")
@@ -413,3 +441,10 @@ class OtonomService:
 
     def drone_failsafe(self, payload: DroneFailsafeRequest) -> DroneStatusResponse:
         return DroneStatusResponse.model_validate(self._drone.failsafe(payload.action))
+
+    def drone_stop(self) -> DroneStatusResponse:
+        return DroneStatusResponse.model_validate(self._drone.stop())
+
+    def stop_live_mission(self) -> DroneStatusResponse:
+        self.request_mission_stop()
+        return self.drone_stop()
