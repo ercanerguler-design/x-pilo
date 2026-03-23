@@ -577,11 +577,19 @@ function renderParcelRoute(parcelResults) {
 
   const routePoints = [];
   const routeParcelIds = [];
+  const parcelTotal = parcelResults.length;
+  const useCenterOnlyRoute = parcelTotal > 36;
+  const perParcelScanLimit = parcelTotal > 20 ? 26 : 52;
+  const routePointBudget = 2400;
+
   parcelResults.forEach((item) => {
-    if (Array.isArray(item.scan_path) && item.scan_path.length) {
-      const compactPath = downsamplePath(item.scan_path, 90);
+    if (!useCenterOnlyRoute && Array.isArray(item.scan_path) && item.scan_path.length) {
+      const compactPath = downsamplePath(item.scan_path, perParcelScanLimit);
       compactPath.forEach((pt) => {
         if (!Array.isArray(pt) || pt.length < 2) {
+          return;
+        }
+        if (routePoints.length >= routePointBudget) {
           return;
         }
         const p = [Number(pt[0]), Number(pt[1])];
@@ -596,6 +604,9 @@ function renderParcelRoute(parcelResults) {
 
     const parcel = parcelById.get(item.parcel_id);
     if (!parcel) {
+      return;
+    }
+    if (routePoints.length >= routePointBudget) {
       return;
     }
     const center = getParcelCenter(parcel);
