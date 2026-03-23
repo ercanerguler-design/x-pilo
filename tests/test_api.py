@@ -98,6 +98,20 @@ def test_drone_status_and_connect_endpoints() -> None:
     assert connect.json()["connected"] is True
 
 
+def test_drone_health_endpoints() -> None:
+    client.post("/api/v1/drone/connect", json={"backend": "sim", "connection_uri": "udp://:14540"})
+
+    health = client.get("/api/v1/drone/health")
+    assert health.status_code == 200
+    body = health.json()
+    assert "checks" in body
+    assert "battery_ok" in body["checks"]
+
+    ready = client.get("/api/v1/drone/health/ready")
+    assert ready.status_code == 200
+    assert "ready" in ready.json()
+
+
 def test_live_parcel_mission_endpoint() -> None:
     client.post("/api/v1/drone/connect", json={"backend": "sim", "connection_uri": "udp://:14540"})
     payload = {

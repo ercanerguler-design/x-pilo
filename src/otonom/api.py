@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import json
 import time
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -185,6 +184,16 @@ def disconnect_drone() -> DroneStatusResponse:
 @app.get("/api/v1/drone/status", response_model=DroneStatusResponse)
 def drone_status() -> DroneStatusResponse:
     return service.get_drone_status()
+
+
+@app.get("/api/v1/drone/health")
+def drone_health() -> dict:
+    return service.drone_health()
+
+
+@app.get("/api/v1/drone/health/ready")
+def drone_health_ready() -> dict:
+    return service.drone_ready_for_mission()
 
 
 @app.post("/api/v1/drone/arm", response_model=DroneStatusResponse)

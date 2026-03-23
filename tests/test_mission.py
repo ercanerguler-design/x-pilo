@@ -53,3 +53,31 @@ def test_mission_aborts_when_precheck_fails() -> None:
 
     assert result.state == MissionState.ABORT
     assert result.log.aborted_reason == "RTK fix yok"
+
+
+def test_uncertain_targets_are_hard_blocked(monkeypatch) -> None:
+    mission = MissionController(_config())
+    pose = DronePose(lat=39.9, lon=32.8, alt_m=6.0)
+    status = SafetyStatus(
+        rtk_fix=True,
+        battery_pct=80.0,
+        wind_mps=3.0,
+        link_ok=True,
+        human_detected=False,
+    )
+    frames = [FrameMetadata(frame_id=i, timestamp_s=i * 0.1) for i in range(1, 4)]
+
+    class _ForcedUncertain:
+        label = "belirsiz"
+        confidence = 0.9
+        reason = "forced for test"
+
+    def _classify(*_args, **_kwargs):
+        return _ForcedUncertain()
+
+    monkeypatch.setattr(mission.classifier, "classify", _classify)
+    result = mission.run(pose, status, frames)
+
+    assert result.state == MissionState.COMPLETE
+    assert all(item.method != "micro_spray" for item in result.log.serviced_targets)
+    assert any(item.method == "blocked_uncertain" for item in result.log.serviced_targets)

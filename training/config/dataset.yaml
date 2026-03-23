@@ -1,0 +1,9 @@
+path: training/data
+train: images/train
+val: images/val
+
+names:
+  0: karpuz
+  1: kaktus
+  2: ot
+  3: belirsiz

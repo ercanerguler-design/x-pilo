@@ -54,14 +54,37 @@ class MissionController:
 
         log.states.append(MissionState.SURVEY)
         raw_detections = self.detector.infer_batch(frames)
-        detections = [
-            d
-            for d in raw_detections
-            if self.classifier.classify(d.id, d.confidence).label == "zararli_bitki"
-        ]
+        harmful_detections = []
+        uncertain_detections = []
+        classification_by_detection_id = {}
+        for detection in raw_detections:
+            classification = self.classifier.classify(detection.id, detection.confidence)
+            classification_by_detection_id[detection.id] = classification
+            if classification.label == "zararli_bitki":
+                harmful_detections.append(detection)
+            elif classification.label == "belirsiz":
+                uncertain_detections.append(detection)
 
         log.states.append(MissionState.RECHECK)
-        targets = self.georef.project(pose, detections)
+        uncertain_targets = self.georef.project(pose, uncertain_detections)
+        for uncertain in uncertain_targets:
+            log.states.append(MissionState.VERIFY)
+            log.serviced_targets.append(
+                InterventionResult(
+                    target_id=uncertain.id,
+                    target_lat=uncertain.lat,
+                    target_lon=uncertain.lon,
+                    sequence=len(log.serviced_targets) + 1,
+                    event_time_s=round(elapsed_time_s, 2),
+                    success=False,
+                    method="blocked_uncertain",
+                    duration_sec=0.0,
+                    note="Blocked by hard rule: uncertain target requires manual review",
+                )
+            )
+            elapsed_time_s += 0.15
+
+        targets = self.georef.project(pose, harmful_detections)
         plan = self.planner.prioritize(targets, pose)
 
         for target in plan:
@@ -73,6 +96,7 @@ class MissionController:
                 zones,
                 manual_approval_required,
                 approved_ids,
+                classification_by_detection_id,
             )
             if log.states and log.states[-1] == MissionState.ABORT:
                 return MissionResult(state=MissionState.ABORT, log=log)
@@ -89,9 +113,31 @@ class MissionController:
         no_spray_zones: list[list[tuple[float, float]]],
         manual_approval_required: bool,
         approved_target_ids: set[str],
+        classification_by_detection_id: dict | None = None,
     ) -> float:
         log.states.extend([MissionState.APPROACH, MissionState.ALIGN])
         elapsed_time_s += 1.5
+
+        if classification_by_detection_id is not None:
+            cls = classification_by_detection_id.get(target.id)
+            cls_label = getattr(cls, "label", "")
+            if cls_label != "zararli_bitki":
+                log.states.append(MissionState.VERIFY)
+                log.serviced_targets.append(
+                    InterventionResult(
+                        target_id=target.id,
+                        target_lat=target.lat,
+                        target_lon=target.lon,
+                        sequence=len(log.serviced_targets) + 1,
+                        event_time_s=round(elapsed_time_s, 2),
+                        success=False,
+                        method="blocked_uncertain",
+                        duration_sec=0.0,
+                        note="Blocked by hard rule: non-harmful or uncertain classification",
+                    )
+                )
+                elapsed_time_s += 0.2
+                return elapsed_time_s
 
         if status.human_detected:
             log.states.append(MissionState.ABORT)

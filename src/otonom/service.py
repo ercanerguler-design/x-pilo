@@ -644,6 +644,50 @@ class OtonomService:
     def drone_stop(self) -> DroneStatusResponse:
         return DroneStatusResponse.model_validate(self._drone.stop())
 
+    def drone_health(self) -> dict:
+        status = self._drone.status()
+        telemetry = status.get("telemetry", {})
+        connected = bool(status.get("connected"))
+        link_ok = bool(telemetry.get("link_ok", False))
+        battery = float(telemetry.get("battery_pct", 0.0) or 0.0)
+        gps_ok = telemetry.get("lat") not in (None, 0.0) and telemetry.get("lon") not in (None, 0.0)
+        battery_ok = battery >= float(self.config.thresholds.min_battery_pct)
+
+        health_state = "healthy"
+        if not connected:
+            health_state = "offline"
+        elif not link_ok or not battery_ok:
+            health_state = "degraded"
+
+        return {
+            "backend": status.get("backend"),
+            "connected": connected,
+            "state": status.get("state"),
+            "health": health_state,
+            "checks": {
+                "telemetry_link": link_ok,
+                "battery_ok": battery_ok,
+                "gps_fix_estimate": bool(gps_ok),
+            },
+            "telemetry": telemetry,
+            "min_battery_pct": self.config.thresholds.min_battery_pct,
+        }
+
+    def drone_ready_for_mission(self) -> dict:
+        health = self.drone_health()
+        checks = health.get("checks", {})
+        ready = bool(
+            health.get("connected")
+            and checks.get("telemetry_link")
+            and checks.get("battery_ok")
+            and checks.get("gps_fix_estimate")
+        )
+        return {
+            "ready": ready,
+            "reason": "OK" if ready else "Drone health checks not satisfied",
+            "health": health,
+        }
+
     def stop_live_mission(self, payload: StopMissionRequest) -> DroneStatusResponse:
         self.request_mission_stop()
         self._restart_confirmation_required = True
